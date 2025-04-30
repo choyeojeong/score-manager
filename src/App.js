@@ -22,8 +22,9 @@ ChartJS.register(LineElement, CategoryScale, LinearScale, PointElement, Tooltip,
 const allowedEmails = [
   "jjjjwon233@gmail.com",
   "yeojeongcho@gmail.com",
-  "teacher2@school.kr",
-  "teacher3@school.kr"
+  "wjdtjs797@gmail.com ",
+  "ssoniii0904@gmail.com",
+  "fatroid@gmail.com"
 ];
 
 function scoreOrderValue(label) {
@@ -49,6 +50,21 @@ function App() {
   const [user, setUser] = useState(null);
   const [newStudent, setNewStudent] = useState({ name: "", school: "중학교", grade: 1, teacher: "" });
   const [newScore, setNewScore] = useState({ studentId: "", type: "내신", date: "", score: 0 });
+
+  const exportToPDF = () => {
+    const doc = new jsPDF();
+    const rows = [];
+    students.forEach(s => {
+      s.scores.forEach(score => {
+        rows.push([s.name, s.school, s.grade, s.teacher, score.type, score.date, score.score]);
+      });
+    });
+    autoTable(doc, {
+      head: [["이름", "학교", "학년", "담임", "성적 종류", "시기", "점수"]],
+      body: rows
+    });
+    doc.save("students_scores.pdf");
+  };
 
   useEffect(() => {
     const auth = getAuth();
@@ -81,21 +97,6 @@ function App() {
   const handleLogout = () => {
     const auth = getAuth();
     signOut(auth);
-  };
-
-  const exportToPDF = () => {
-    const doc = new jsPDF();
-    const rows = [];
-    students.forEach(s => {
-      s.scores.forEach(score => {
-        rows.push([s.name, s.school, s.grade, s.teacher, score.type, score.date, score.score]);
-      });
-    });
-    autoTable(doc, {
-      head: [["이름", "학교", "학년", "담임", "성적 종류", "시기", "점수"]],
-      body: rows
-    });
-    doc.save("students_scores.pdf");
   };
 
   const exportToExcel = () => {
