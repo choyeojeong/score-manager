@@ -7,7 +7,6 @@ import { collection, getDocs, addDoc, doc, updateDoc, deleteDoc } from "firebase
 import {
   getAuth,
   onAuthStateChanged,
-  signInWithEmailAndPassword,
   signOut,
   GoogleAuthProvider,
   signInWithPopup,
@@ -16,13 +15,14 @@ import * as XLSX from "xlsx";
 import { saveAs } from "file-saver";
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
+import NanumGothic from "./jsfonts/NanumGothic-normal.js";
 
 ChartJS.register(LineElement, CategoryScale, LinearScale, PointElement, Tooltip, Legend, ChartDataLabels);
 
 const allowedEmails = [
   "jjjjwon233@gmail.com",
   "yeojeongcho@gmail.com",
-  "wjdtjs797@gmail.com ",
+  "wjdtjs797@gmail.com",
   "ssoniii0904@gmail.com",
   "fatroid@gmail.com"
 ];
@@ -50,21 +50,9 @@ function App() {
   const [user, setUser] = useState(null);
   const [newStudent, setNewStudent] = useState({ name: "", school: "중학교", grade: 1, teacher: "" });
   const [newScore, setNewScore] = useState({ studentId: "", type: "내신", date: "", score: 0 });
-
-  const exportToPDF = () => {
-    const doc = new jsPDF();
-    const rows = [];
-    students.forEach(s => {
-      s.scores.forEach(score => {
-        rows.push([s.name, s.school, s.grade, s.teacher, score.type, score.date, score.score]);
-      });
-    });
-    autoTable(doc, {
-      head: [["이름", "학교", "학년", "담임", "성적 종류", "시기", "점수"]],
-      body: rows
-    });
-    doc.save("students_scores.pdf");
-  };
+  const [searchName, setSearchName] = useState("");
+  const [searchSchool, setSearchSchool] = useState("");
+  const [searchGrade, setSearchGrade] = useState("");
 
   useEffect(() => {
     const auth = getAuth();
@@ -99,35 +87,18 @@ function App() {
     signOut(auth);
   };
 
-  const exportToExcel = () => {
-    const wsData = [["이름", "학교", "학년", "담임", "성적 종류", "시기", "점수"]];
-    students.forEach(s => {
-      s.scores.forEach(score => {
-        wsData.push([s.name, s.school, s.grade, s.teacher, score.type, score.date, score.score]);
-      });
-    });
-    const wb = XLSX.utils.book_new();
-    const ws = XLSX.utils.aoa_to_sheet(wsData);
-    XLSX.utils.book_append_sheet(wb, ws, "Scores");
-    const excelBuffer = XLSX.write(wb, { bookType: "xlsx", type: "array" });
-    const data = new Blob([excelBuffer], { type: "application/octet-stream" });
-    saveAs(data, "students_scores.xlsx");
-  };
-
   const addStudent = async () => {
-    if (!newStudent.name) return;
     await addDoc(collection(db, "students"), { ...newStudent, scores: [] });
     fetchStudents();
   };
 
   const addScore = async () => {
-    if (!newScore.studentId) return;
     const studentRef = doc(db, "students", newScore.studentId);
-    const student = students.find(s => s.id === newScore.studentId);
-    const updatedScores = [...student.scores, {
+    const student = students.find((s) => s.id === newScore.studentId);
+    const updatedScores = [...(student.scores || []), {
       type: newScore.type,
       date: newScore.date,
-      score: Number(newScore.score),
+      score: Number(newScore.score)
     }];
     await updateDoc(studentRef, { scores: updatedScores });
     fetchStudents();
@@ -139,128 +110,150 @@ function App() {
   };
 
   const deleteScore = async (studentId, index) => {
-    const student = students.find(s => s.id === studentId);
-    const updatedScores = [...student.scores];
-    updatedScores.splice(index, 1);
-    await updateDoc(doc(db, "students", studentId), { scores: updatedScores });
+    const studentRef = doc(db, "students", studentId);
+    const student = students.find((s) => s.id === studentId);
+    const updatedScores = student.scores.filter((_, i) => i !== index);
+    await updateDoc(studentRef, { scores: updatedScores });
     fetchStudents();
   };
 
-  const makeChartData = (type, s) => {
-    const sorted = s.scores.filter(score => score.type === type).sort((a, b) => scoreOrderValue(a.date) - scoreOrderValue(b.date));
-    return {
-      labels: sorted.map(s => s.date),
-      datasets: [{
-        label: type,
-        data: sorted.map(s => s.score),
-        borderColor: type === "내신" ? "#42a5f5" : "#66bb6a",
-        fill: false,
-        datalabels: {
-          align: 'top',
-          anchor: 'end',
-          formatter: (value) => value,
-          color: '#000'
-        }
-      }]
-    };
+  const exportToPDF = () => {
+    const doc = new jsPDF();
+    doc.addFileToVFS("NanumGothic.ttf", NanumGothic);
+    doc.addFont("NanumGothic.ttf", "NanumGothic", "normal");
+    doc.setFont("NanumGothic");
+
+    const rows = [];
+    students.forEach(s => {
+      s.scores.forEach(score => {
+        rows.push([s.name, s.school, s.grade, s.teacher, score.type, score.date, score.score]);
+      });
+    });
+    autoTable(doc, {
+      head: [["이름", "학교", "학년", "담임", "성적 종류", "시기", "점수"]],
+      body: rows
+    });
+    doc.save("students_scores.pdf");
   };
 
-  const chartOptions = {
-    responsive: true,
-    plugins: {
-      datalabels: {
-        display: true,
-        color: '#000',
-        align: 'top',
-        font: {
-          weight: 'bold'
-        }
-      }
-    }
+  const exportToExcel = () => {
+    const rows = [];
+    students.forEach(s => {
+      s.scores.forEach(score => {
+        rows.push({ 이름: s.name, 학교: s.school, 학년: s.grade, 담임: s.teacher, 종류: score.type, 시기: score.date, 점수: score.score });
+      });
+    });
+    const worksheet = XLSX.utils.json_to_sheet(rows);
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, worksheet, "성적");
+    const excelBuffer = XLSX.write(workbook, { bookType: "xlsx", type: "array" });
+    saveAs(new Blob([excelBuffer]), "students_scores.xlsx");
   };
 
-  const ScoreTable = ({ scores, type, studentId }) => {
-    const filtered = scores.filter(s => s.type === type);
-    const avg = filtered.length ? (filtered.reduce((sum, s) => sum + s.score, 0) / filtered.length).toFixed(2) : 0;
-    return (
-      <div style={{ flex: 1 }}>
-        <h4>{type} 성적표</h4>
-        <table border="1" cellPadding="5">
-          <thead>
-            <tr><th>시기</th><th>점수</th><th>삭제</th></tr>
-          </thead>
-          <tbody>
-            {filtered.map((s, i) => (
-              <tr key={i}>
-                <td>{s.date}</td>
-                <td>{s.score}</td>
-                <td><button onClick={() => deleteScore(studentId, students.find(stu => stu.id === studentId).scores.indexOf(s))}>삭제</button></td>
-              </tr>
-            ))}
-          </tbody>
-          <tfoot>
-            <tr><td>평균</td><td>{avg}</td><td></td></tr>
-          </tfoot>
-        </table>
-      </div>
-    );
-  };
-
-  if (!user) {
-    return (
-      <div style={{ padding: 20 }}>
-        <h2>로그인</h2>
-        <button onClick={handleGoogleLogin}>Google로 로그인</button>
-      </div>
-    );
-  }
+  const filteredStudents = students.filter((s) =>
+    s.name.includes(searchName) &&
+    s.school.includes(searchSchool) &&
+    (searchGrade === "" || s.grade === parseInt(searchGrade))
+  );
 
   return (
     <div style={{ padding: 20 }}>
-      <button onClick={handleLogout}>로그아웃</button>
-      <button onClick={exportToPDF}>PDF로 내보내기</button>
-      <button onClick={exportToExcel}>엑셀로 내보내기</button>
-
-      <h3>학생 추가</h3>
-      <input placeholder="이름" value={newStudent.name} onChange={e => setNewStudent({ ...newStudent, name: e.target.value })} />
-      <input placeholder="학교" value={newStudent.school} onChange={e => setNewStudent({ ...newStudent, school: e.target.value })} />
-      <input placeholder="학년" type="number" value={newStudent.grade} onChange={e => setNewStudent({ ...newStudent, grade: Number(e.target.value) })} />
-      <input placeholder="담임" value={newStudent.teacher} onChange={e => setNewStudent({ ...newStudent, teacher: e.target.value })} />
-      <button onClick={addStudent}>학생 추가</button>
-
-      <h3>성적 추가</h3>
-      <select value={newScore.studentId} onChange={e => setNewScore({ ...newScore, studentId: e.target.value })}>
-        <option value="">학생 선택</option>
-        {students.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
-      </select>
-      <select value={newScore.type} onChange={e => setNewScore({ ...newScore, type: e.target.value })}>
-        <option value="내신">내신</option>
-        <option value="모의고사">모의고사</option>
-      </select>
-      <input placeholder="시기" value={newScore.date} onChange={e => setNewScore({ ...newScore, date: e.target.value })} />
-      <input type="number" placeholder="점수" value={newScore.score} onChange={e => setNewScore({ ...newScore, score: e.target.value })} />
-      <button onClick={addScore}>성적 추가</button>
-
-      {students.map(s => (
-        <div key={s.id} style={{ marginBottom: 50 }}>
-          <h3>
-            {s.name} - {s.school} {s.grade}학년
-            <button onClick={() => deleteStudent(s.id)} style={{ marginLeft: 10 }}>삭제</button>
-          </h3>
-          <div style={{ display: 'flex', gap: 40, marginBottom: 20 }}>
-            <ScoreTable scores={s.scores} type="내신" studentId={s.id} />
-            <ScoreTable scores={s.scores} type="모의고사" studentId={s.id} />
-          </div>
-          <div style={{ display: 'flex', gap: 20 }}>
-            <div style={{ flex: 1 }}>
-              <Line data={makeChartData("내신", s)} options={chartOptions} />
-            </div>
-            <div style={{ flex: 1 }}>
-              <Line data={makeChartData("모의고사", s)} options={chartOptions} />
-            </div>
-          </div>
+      {!user ? (
+        <div>
+          <h2>로그인</h2>
+          <button onClick={handleGoogleLogin}>Google로 로그인</button>
         </div>
-      ))}
+      ) : (
+        <div>
+          <h2>성적 관리 시스템 <button onClick={handleLogout}>로그아웃</button></h2>
+
+          <input placeholder="학생 이름 검색" value={searchName} onChange={(e) => setSearchName(e.target.value)} />
+          <input placeholder="학교 검색" value={searchSchool} onChange={(e) => setSearchSchool(e.target.value)} />
+          <input placeholder="학년 검색" value={searchGrade} onChange={(e) => setSearchGrade(e.target.value)} />
+
+          <h3>학생 추가</h3>
+          <input placeholder="이름" onChange={(e) => setNewStudent({ ...newStudent, name: e.target.value })} />
+          <input placeholder="학교" onChange={(e) => setNewStudent({ ...newStudent, school: e.target.value })} />
+          <input placeholder="학년" type="number" onChange={(e) => setNewStudent({ ...newStudent, grade: parseInt(e.target.value) })} />
+          <input placeholder="담임" onChange={(e) => setNewStudent({ ...newStudent, teacher: e.target.value })} />
+          <button onClick={addStudent}>학생 추가</button>
+
+          <h3>성적 추가</h3>
+          <select onChange={(e) => setNewScore({ ...newScore, studentId: e.target.value })}>
+            <option value="">학생 선택</option>
+            {students.map((s) => (
+              <option key={s.id} value={s.id}>{s.name}</option>
+            ))}
+          </select>
+          <select onChange={(e) => setNewScore({ ...newScore, type: e.target.value })}>
+            <option value="내신">내신</option>
+            <option value="모의고사">모의고사</option>
+          </select>
+          <input placeholder="시기" onChange={(e) => setNewScore({ ...newScore, date: e.target.value })} />
+          <input placeholder="점수" type="number" onChange={(e) => setNewScore({ ...newScore, score: parseInt(e.target.value) })} />
+          <button onClick={addScore}>성적 추가</button>
+
+          <button onClick={exportToPDF}>PDF로 내보내기</button>
+          <button onClick={exportToExcel}>엑셀로 내보내기</button>
+
+          {filteredStudents.map((s) => {
+            const scoresByType = type => (s.scores || []).filter(score => score.type === type).sort((a, b) => scoreOrderValue(a.date) - scoreOrderValue(b.date));
+            const makeChartData = (type) => {
+              const sorted = scoresByType(type);
+              return {
+                labels: sorted.map(sc => sc.date),
+                datasets: [{
+                  label: type,
+                  data: sorted.map(sc => sc.score),
+                  borderColor: type === "내신" ? "blue" : "green",
+                  fill: false,
+                  tension: 0.3
+                }]
+              };
+            };
+            const chartOptions = {
+              plugins: {
+                datalabels: {
+                  anchor: 'end', align: 'top', font: { weight: 'bold' }
+                }
+              }
+            };
+            const avg = arr => arr.length === 0 ? 0 : (arr.reduce((a, b) => a + b, 0) / arr.length).toFixed(2);
+
+            return (
+              <div key={s.id} style={{ marginTop: 30 }}>
+                <h3>{s.name} - {s.school} {s.grade}학년 <button onClick={() => deleteStudent(s.id)}>학생 삭제</button></h3>
+                <div style={{ display: 'flex', gap: 50 }}>
+                  {["내신", "모의고사"].map(type => {
+                    const sorted = scoresByType(type);
+                    return (
+                      <div key={type}>
+                        <h4>{type} 성적표</h4>
+                        <table border="1">
+                          <thead><tr><th>시기</th><th>점수</th><th></th></tr></thead>
+                          <tbody>
+                            {sorted.map((sc, i) => (
+                              <tr key={i}>
+                                <td>{sc.date}</td><td>{sc.score}</td>
+                                <td><button onClick={() => deleteScore(s.id, s.scores.indexOf(sc))}>삭제</button></td>
+                              </tr>
+                            ))}
+                            <tr><td>평균</td><td>{avg(sorted.map(s => s.score))}</td><td></td></tr>
+                          </tbody>
+                        </table>
+                      </div>
+                    );
+                  })}
+                </div>
+                <div style={{ display: 'flex', gap: 50, marginTop: 20 }}>
+                  <div style={{ width: '45%' }}><Line data={makeChartData("내신")} options={chartOptions} plugins={[ChartDataLabels]} /></div>
+                  <div style={{ width: '45%' }}><Line data={makeChartData("모의고사")} options={chartOptions} plugins={[ChartDataLabels]} /></div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
