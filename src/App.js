@@ -1,209 +1,263 @@
 import React, { useState, useEffect } from "react";
 import { Line } from "react-chartjs-2";
-import { Chart as ChartJS, LineElement, CategoryScale, LinearScale, PointElement } from "chart.js";
-import { saveAs } from "file-saver";
-import * as XLSX from "xlsx";
+import { Chart as ChartJS, LineElement, CategoryScale, LinearScale, PointElement, Tooltip, Legend } from "chart.js";
+import ChartDataLabels from "chartjs-plugin-datalabels";
 import { db } from "./firebase";
 import { collection, getDocs, addDoc, doc, updateDoc, deleteDoc } from "firebase/firestore";
+import {
+  getAuth,
+  onAuthStateChanged,
+  signInWithEmailAndPassword,
+  signOut,
+  GoogleAuthProvider,
+  signInWithPopup,
+} from "firebase/auth";
+import * as XLSX from "xlsx";
+import { saveAs } from "file-saver";
+import jsPDF from "jspdf";
+import autoTable from "jspdf-autotable";
 
-ChartJS.register(LineElement, CategoryScale, LinearScale, PointElement);
+ChartJS.register(LineElement, CategoryScale, LinearScale, PointElement, Tooltip, Legend, ChartDataLabels);
+
+const allowedEmails = [
+  "jjjjwon233@gmail.com",
+  "yeojeongcho@gmail.com",
+  "teacher2@school.kr",
+  "teacher3@school.kr"
+];
+
+function scoreOrderValue(label) {
+  const yearMap = { 중: 0, 고: 1000 };
+  const termMap = {
+    "1학기 중간": 1,
+    "1학기 기말": 2,
+    "2학기 중간": 3,
+    "2학기 기말": 4,
+    "3월": 5,
+    "6월": 6,
+    "9월": 7,
+    "10월": 8,
+  };
+  const match = label.match(/([중고])([1-3]) (.+)/);
+  if (!match) return 9999;
+  const [, level, grade, period] = match;
+  return yearMap[level] + parseInt(grade) * 100 + (termMap[period] || 0);
+}
 
 function App() {
   const [students, setStudents] = useState([]);
-  const [filter, setFilter] = useState({ school: "", grade: "", teacher: "" });
+  const [user, setUser] = useState(null);
   const [newStudent, setNewStudent] = useState({ name: "", school: "중학교", grade: 1, teacher: "" });
   const [newScore, setNewScore] = useState({ studentId: "", type: "내신", date: "", score: 0 });
 
   useEffect(() => {
-    const fetchStudents = async () => {
-      const snapshot = await getDocs(collection(db, "students"));
-      const list = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-      setStudents(list);
-    };
-
-    fetchStudents();
+    const auth = getAuth();
+    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
+      if (currentUser && !allowedEmails.includes(currentUser.email)) {
+        alert("허용되지 않은 사용자입니다.");
+        signOut(auth);
+        return;
+      }
+      setUser(currentUser);
+      if (currentUser) fetchStudents();
+    });
+    return () => unsubscribe();
   }, []);
 
-  const filteredStudents = students.filter(
-    (s) =>
-      (!filter.school || s.school === filter.school) &&
-      (!filter.grade || s.grade === parseInt(filter.grade)) &&
-      (!filter.teacher || s.teacher === filter.teacher)
-  );
+  const fetchStudents = async () => {
+    const snapshot = await getDocs(collection(db, "students"));
+    const list = snapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() }));
+    setStudents(list);
+  };
+
+  const handleGoogleLogin = () => {
+    const provider = new GoogleAuthProvider();
+    const auth = getAuth();
+    signInWithPopup(auth, provider)
+      .then(() => alert("✅ Google 로그인 성공"))
+      .catch(() => alert("❌ Google 로그인 실패"));
+  };
+
+  const handleLogout = () => {
+    const auth = getAuth();
+    signOut(auth);
+  };
+
+  const exportToPDF = () => {
+    const doc = new jsPDF();
+    const rows = [];
+    students.forEach(s => {
+      s.scores.forEach(score => {
+        rows.push([s.name, s.school, s.grade, s.teacher, score.type, score.date, score.score]);
+      });
+    });
+    autoTable(doc, {
+      head: [["이름", "학교", "학년", "담임", "성적 종류", "시기", "점수"]],
+      body: rows
+    });
+    doc.save("students_scores.pdf");
+  };
+
+  const exportToExcel = () => {
+    const wsData = [["이름", "학교", "학년", "담임", "성적 종류", "시기", "점수"]];
+    students.forEach(s => {
+      s.scores.forEach(score => {
+        wsData.push([s.name, s.school, s.grade, s.teacher, score.type, score.date, score.score]);
+      });
+    });
+    const wb = XLSX.utils.book_new();
+    const ws = XLSX.utils.aoa_to_sheet(wsData);
+    XLSX.utils.book_append_sheet(wb, ws, "Scores");
+    const excelBuffer = XLSX.write(wb, { bookType: "xlsx", type: "array" });
+    const data = new Blob([excelBuffer], { type: "application/octet-stream" });
+    saveAs(data, "students_scores.xlsx");
+  };
 
   const addStudent = async () => {
-    const newStudentData = { ...newStudent, scores: [] };
-    const docRef = await addDoc(collection(db, "students"), newStudentData);
-    setStudents(prev => [...prev, { id: docRef.id, ...newStudentData }]);
+    if (!newStudent.name) return;
+    await addDoc(collection(db, "students"), { ...newStudent, scores: [] });
+    fetchStudents();
   };
 
   const addScore = async () => {
+    if (!newScore.studentId) return;
+    const studentRef = doc(db, "students", newScore.studentId);
     const student = students.find(s => s.id === newScore.studentId);
-    if (!student) return;
-
-    const updatedScores = [...student.scores, { ...newScore, score: parseInt(newScore.score), subject: "영어" }];
-    const studentRef = doc(db, "students", student.id);
+    const updatedScores = [...student.scores, {
+      type: newScore.type,
+      date: newScore.date,
+      score: Number(newScore.score),
+    }];
     await updateDoc(studentRef, { scores: updatedScores });
+    fetchStudents();
+  };
 
-    setStudents(prev =>
-      prev.map(s => (s.id === student.id ? { ...s, scores: updatedScores } : s))
-    );
+  const deleteStudent = async (id) => {
+    await deleteDoc(doc(db, "students", id));
+    fetchStudents();
   };
 
   const deleteScore = async (studentId, index) => {
     const student = students.find(s => s.id === studentId);
-    if (!student) return;
-
-    const updatedScores = student.scores.filter((_, i) => i !== index);
-    const studentRef = doc(db, "students", studentId);
-    await updateDoc(studentRef, { scores: updatedScores });
-
-    setStudents(prev =>
-      prev.map(s => (s.id === studentId ? { ...s, scores: updatedScores } : s))
-    );
+    const updatedScores = [...student.scores];
+    updatedScores.splice(index, 1);
+    await updateDoc(doc(db, "students", studentId), { scores: updatedScores });
+    fetchStudents();
   };
 
-  const deleteStudent = async (studentId) => {
-    await deleteDoc(doc(db, "students", studentId));
-    setStudents(prev => prev.filter(s => s.id !== studentId));
-  };
-
-  const exportExcel = () => {
-    const data = students.flatMap((s) =>
-      s.scores.map((sc) => ({ name: s.name, school: s.school, grade: s.grade, teacher: s.teacher, ...sc }))
-    );
-    const ws = XLSX.utils.json_to_sheet(data);
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, "성적");
-    const excelBuffer = XLSX.write(wb, { bookType: "xlsx", type: "array" });
-    const blob = new Blob([excelBuffer], { type: "application/octet-stream" });
-    saveAs(blob, "scores.xlsx");
-  };
-
-  const exportPdf = () => {
-    window.print();
-  };
-
-  const graphData = (student, type) => {
-    const scores = student.scores.filter((s) => s.type === type);
-    const sorted = [...scores].sort((a, b) => a.date.localeCompare(b.date));
+  const makeChartData = (type, s) => {
+    const sorted = s.scores.filter(score => score.type === type).sort((a, b) => scoreOrderValue(a.date) - scoreOrderValue(b.date));
     return {
-      labels: sorted.map((s) => s.date),
-      datasets: [
-        {
-          label: `${type} 성적`,
-          data: sorted.map((s) => s.score),
-          borderColor: type === "내신" ? "blue" : "green",
-        },
-      ],
+      labels: sorted.map(s => s.date),
+      datasets: [{
+        label: type,
+        data: sorted.map(s => s.score),
+        borderColor: type === "내신" ? "#42a5f5" : "#66bb6a",
+        fill: false,
+        datalabels: {
+          align: 'top',
+          anchor: 'end',
+          formatter: (value) => value,
+          color: '#000'
+        }
+      }]
     };
   };
 
-  const copyScores = () => {
-    const data = students
-      .map(
-        (s) =>
-          `${s.name} (${s.school} ${s.grade}학년, ${s.teacher})\n` +
-          s.scores.map((sc) => ` - ${sc.type} ${sc.date} ${sc.subject}: ${sc.score}점`).join("\n")
-      )
-      .join("\n\n");
-    navigator.clipboard.writeText(data);
-    alert("복사되었습니다!");
+  const chartOptions = {
+    responsive: true,
+    plugins: {
+      datalabels: {
+        display: true,
+        color: '#000',
+        align: 'top',
+        font: {
+          weight: 'bold'
+        }
+      }
+    }
   };
 
-  return (
-    <div style={{ padding: 20, fontFamily: "sans-serif" }}>
-      <h2>성적 관리 시스템</h2>
-
-      <div style={{ display: "flex", gap: 10, marginBottom: 10 }}>
-        <select onChange={(e) => setFilter({ ...filter, school: e.target.value })}>
-          <option value="">전체 학교</option>
-          <option value="중학교">중학교</option>
-          <option value="고등학교">고등학교</option>
-        </select>
-        <select onChange={(e) => setFilter({ ...filter, grade: e.target.value })}>
-          <option value="">전체 학년</option>
-          {[1, 2, 3].map((g) => (
-            <option key={g} value={g}>{g}학년</option>
-          ))}
-        </select>
-        <input placeholder="담당선생님" onChange={(e) => setFilter({ ...filter, teacher: e.target.value })} />
+  const ScoreTable = ({ scores, type, studentId }) => {
+    const filtered = scores.filter(s => s.type === type);
+    const avg = filtered.length ? (filtered.reduce((sum, s) => sum + s.score, 0) / filtered.length).toFixed(2) : 0;
+    return (
+      <div style={{ flex: 1 }}>
+        <h4>{type} 성적표</h4>
+        <table border="1" cellPadding="5">
+          <thead>
+            <tr><th>시기</th><th>점수</th><th>삭제</th></tr>
+          </thead>
+          <tbody>
+            {filtered.map((s, i) => (
+              <tr key={i}>
+                <td>{s.date}</td>
+                <td>{s.score}</td>
+                <td><button onClick={() => deleteScore(studentId, students.find(stu => stu.id === studentId).scores.indexOf(s))}>삭제</button></td>
+              </tr>
+            ))}
+          </tbody>
+          <tfoot>
+            <tr><td>평균</td><td>{avg}</td><td></td></tr>
+          </tfoot>
+        </table>
       </div>
+    );
+  };
 
-      <button onClick={exportExcel}>엑셀로 내보내기</button>
-      <button onClick={exportPdf}>PDF로 인쇄</button>
-      <button onClick={copyScores}>복사하기</button>
+  if (!user) {
+    return (
+      <div style={{ padding: 20 }}>
+        <h2>로그인</h2>
+        <button onClick={handleGoogleLogin}>Google로 로그인</button>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ padding: 20 }}>
+      <button onClick={handleLogout}>로그아웃</button>
+      <button onClick={exportToPDF}>PDF로 내보내기</button>
+      <button onClick={exportToExcel}>엑셀로 내보내기</button>
 
       <h3>학생 추가</h3>
-      <input placeholder="이름" onChange={(e) => setNewStudent({ ...newStudent, name: e.target.value })} />
-      <select onChange={(e) => setNewStudent({ ...newStudent, school: e.target.value })}>
-        <option value="중학교">중학교</option>
-        <option value="고등학교">고등학교</option>
-      </select>
-      <select onChange={(e) => setNewStudent({ ...newStudent, grade: parseInt(e.target.value) })}>
-        {[1, 2, 3].map((g) => (
-          <option key={g} value={g}>{g}학년</option>
-        ))}
-      </select>
-      <input placeholder="담당선생님" onChange={(e) => setNewStudent({ ...newStudent, teacher: e.target.value })} />
-      <button onClick={addStudent}>추가</button>
+      <input placeholder="이름" value={newStudent.name} onChange={e => setNewStudent({ ...newStudent, name: e.target.value })} />
+      <input placeholder="학교" value={newStudent.school} onChange={e => setNewStudent({ ...newStudent, school: e.target.value })} />
+      <input placeholder="학년" type="number" value={newStudent.grade} onChange={e => setNewStudent({ ...newStudent, grade: Number(e.target.value) })} />
+      <input placeholder="담임" value={newStudent.teacher} onChange={e => setNewStudent({ ...newStudent, teacher: e.target.value })} />
+      <button onClick={addStudent}>학생 추가</button>
 
-      <h4>성적 추가</h4>
-      <select onChange={(e) => setNewScore({ ...newScore, studentId: e.target.value })}>
-        {students.map((s) => (
-          <option key={s.id} value={s.id}>{s.name}</option>
-        ))}
+      <h3>성적 추가</h3>
+      <select value={newScore.studentId} onChange={e => setNewScore({ ...newScore, studentId: e.target.value })}>
+        <option value="">학생 선택</option>
+        {students.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
       </select>
-      <select onChange={(e) => setNewScore({ ...newScore, type: e.target.value })}>
+      <select value={newScore.type} onChange={e => setNewScore({ ...newScore, type: e.target.value })}>
         <option value="내신">내신</option>
         <option value="모의고사">모의고사</option>
       </select>
+      <input placeholder="시기" value={newScore.date} onChange={e => setNewScore({ ...newScore, date: e.target.value })} />
+      <input type="number" placeholder="점수" value={newScore.score} onChange={e => setNewScore({ ...newScore, score: e.target.value })} />
+      <button onClick={addScore}>성적 추가</button>
 
-      {newScore.type === "내신" ? (
-        <select onChange={(e) => setNewScore({ ...newScore, date: e.target.value })}>
-          <option value="">선택</option>
-          {["중", "고"].flatMap((level) =>
-            Array.from({ length: 3 }, (_, i) =>
-              ["1학기 중간", "1학기 기말", "2학기 중간", "2학기 기말"].map((term) => `${level}${i + 1} ${term}`)
-            ).flat()
-          ).map((label) => (
-            <option key={label} value={label}>{label}</option>
-          ))}
-        </select>
-      ) : (
-        <select onChange={(e) => setNewScore({ ...newScore, date: e.target.value })}>
-          <option value="">선택</option>
-          {["고1", "고2", "고3"].flatMap((grade) =>
-            ["3월", "6월", "9월", "10월"].map((month) => `${grade} ${month}`)
-          ).map((label) => (
-            <option key={label} value={label}>{label}</option>
-          ))}
-        </select>
-      )}
-
-      <input type="number" placeholder="점수" onChange={(e) => setNewScore({ ...newScore, score: e.target.value })} />
-      <button onClick={addScore}>추가</button>
-
-      <hr />
-
-      {filteredStudents.map((s) => (
-        <div key={s.id} style={{ border: "1px solid #ccc", padding: 10, marginBottom: 10 }}>
-          <h4>{s.name} ({s.school} {s.grade}학년, {s.teacher})</h4>
-
-          <strong>내신 성적 추이</strong>
-          <Line data={graphData(s, "내신")} />
-          <strong>모의고사 성적 추이</strong>
-          <Line data={graphData(s, "모의고사")} />
-
-          <ul>
-            {s.scores.map((sc, i) => (
-              <li key={i}>
-                [{sc.type}] {sc.date} {sc.subject}: {sc.score}점
-                <button onClick={() => deleteScore(s.id, i)}>삭제</button>
-              </li>
-            ))}
-          </ul>
-          <button onClick={() => deleteStudent(s.id)}>학생 삭제</button>
+      {students.map(s => (
+        <div key={s.id} style={{ marginBottom: 50 }}>
+          <h3>
+            {s.name} - {s.school} {s.grade}학년
+            <button onClick={() => deleteStudent(s.id)} style={{ marginLeft: 10 }}>삭제</button>
+          </h3>
+          <div style={{ display: 'flex', gap: 40, marginBottom: 20 }}>
+            <ScoreTable scores={s.scores} type="내신" studentId={s.id} />
+            <ScoreTable scores={s.scores} type="모의고사" studentId={s.id} />
+          </div>
+          <div style={{ display: 'flex', gap: 20 }}>
+            <div style={{ flex: 1 }}>
+              <Line data={makeChartData("내신", s)} options={chartOptions} />
+            </div>
+            <div style={{ flex: 1 }}>
+              <Line data={makeChartData("모의고사", s)} options={chartOptions} />
+            </div>
+          </div>
         </div>
       ))}
     </div>
